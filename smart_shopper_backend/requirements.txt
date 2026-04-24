@@ -16,3 +16,4 @@ cryptography
 requests
 httpx
 python-dotenv
+google-genai
