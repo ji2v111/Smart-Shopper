@@ -7,7 +7,7 @@ torch
 torchvision
 transformers
 faiss-cpu
-rembg
+rembg[cpu]
 opencv-python-headless
 Pillow
 numpy
