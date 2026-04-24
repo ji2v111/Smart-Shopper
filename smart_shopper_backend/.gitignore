@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Database
+*.db
+
+# FAISS & vectors
+faiss_index.bin
+vector_map.pkl
+
+# Uploaded images
+storage/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
