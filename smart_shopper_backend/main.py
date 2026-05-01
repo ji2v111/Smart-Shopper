@@ -38,9 +38,17 @@ SMTP_PORT      = int(os.getenv("SMTP_PORT",  "587"))
 SMTP_USER      = os.getenv("SMTP_USER",      "")
 SMTP_PASS      = os.getenv("SMTP_PASS",      "")
 
-_raw_key   = os.getenv("DB_SECRET_KEY", "")
-FERNET_KEY = (base64.urlsafe_b64encode(_raw_key.encode().ljust(32)[:32])
-              if _raw_key else Fernet.generate_key())
+_raw_key = os.getenv("DB_SECRET_KEY", "")
+_KEY_FILE = ".fernet.key"
+if _raw_key:
+    FERNET_KEY = base64.urlsafe_b64encode(_raw_key.encode().ljust(32)[:32])
+elif os.path.exists(_KEY_FILE):
+    with open(_KEY_FILE, "rb") as _kf:
+        FERNET_KEY = _kf.read().strip()
+else:
+    FERNET_KEY = Fernet.generate_key()
+    with open(_KEY_FILE, "wb") as _kf:
+        _kf.write(FERNET_KEY)
 cipher = Fernet(FERNET_KEY)
 
 def enc(text: str) -> str:
@@ -57,26 +65,26 @@ api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 # ── Timer helper ───────────────────────────────────────────────────────────────
 class Timer:
-    """مؤقت يظهر بالتيرمنال فقط"""
+    """Terminal-only step timer."""
     def __init__(self, label: str):
         self.label = label
         self.start = None
 
     def __enter__(self):
         self.start = time.perf_counter()
-        print(f"⏱  [{self.label}] بدأ...")
+        print(f"⏱  [{self.label}] started...")
         return self
 
     def __exit__(self, *_):
         elapsed = time.perf_counter() - self.start
-        print(f"✅  [{self.label}] انتهى في {elapsed:.2f}s")
+        print(f"✅  [{self.label}] done in {elapsed:.2f}s")
 
     @property
     def elapsed(self):
         return time.perf_counter() - self.start if self.start else 0.0
 
 
-# ── Region context — بدون تحديد أسواق، فقط عملة واسم المنطقة ────────────────
+# ── Region context — currency and region name only, no market restrictions ────
 REGION_CONTEXT = {
     "SA": {"name": "Saudi Arabia",  "currency": "SAR", "locale": "ar-SA"},
     "AE": {"name": "UAE",           "currency": "AED", "locale": "ar-AE"},
@@ -204,10 +212,11 @@ class Vision:
         return mean
 
     @staticmethod
-    def search_similar(vec, top_k=10, threshold=0.82):
+    def search_similar(vec, language: str = "ar", top_k=10, threshold=0.87):
         """
-        يبحث عن أقرب منتج في الكاش بغض النظر عن اللغة.
-        يرجع المنتج المطابق + نسبة التشابه.
+        Search for the nearest cached product, filtered by language to avoid
+        cross-language mismatches (e.g. Spanish query returning Arabic results).
+        Returns the best matching product + similarity score.
         """
         if faiss_index.ntotal == 0:
             return None
@@ -222,11 +231,16 @@ class Vision:
                 continue
             c.execute("SELECT * FROM products WHERE id=?", (pid,))
             row = c.fetchone()
-            if row:
-                result = dict(row); similarity = round(float(dist), 4)
-                result["name"]  = dec(result.pop("name_enc",  "") or "")
-                result["brand"] = dec(result.pop("brand_enc", "") or "")
-                break
+            if not row:
+                continue
+            product = dict(row)
+            # Language must match — skip cross-language results
+            if product.get("language", language) != language:
+                continue
+            result = product; similarity = round(float(dist), 4)
+            result["name"]  = dec(result.pop("name_enc",  "") or "")
+            result["brand"] = dec(result.pop("brand_enc", "") or "")
+            break
         conn.close()
         return {"product": result, "similarity": similarity} if result else None
 
@@ -240,8 +254,8 @@ class LiveSearch:
     @staticmethod
     def get_live_visual_data(img_array, region_code: str) -> str:
         """
-        يبحث بصريًا عبر Google Lens ويرجع نتائج من الويب العام
-        بدون تقييد لأسواق معينة.
+        Visual search via Google Lens, returning results from the public web
+        with no market restrictions.
         """
         if not SERPAPI_KEY or not IMGBB_KEY:
             return "[]"
@@ -259,12 +273,12 @@ class LiveSearch:
 
             region_info = REGION_CONTEXT.get(region_code, REGION_CONTEXT["SA"])
 
-            # بحث Lens بالريجون الصحيح
+            # Lens search with correct region and locale
             lens = requests.get("https://serpapi.com/search", timeout=20, params={
                 "engine": "google_lens",
                 "url": url,
-                "gl": region_code.lower(),   # بلد المستخدم
-                "hl": region_info["locale"].split("-")[0],  # لغة المستخدم
+                "gl": region_code.lower(),   # user country
+                "hl": region_info["locale"].split("-")[0],  # user language
                 "api_key": SERPAPI_KEY
             })
             out = []
@@ -284,29 +298,48 @@ class LiveSearch:
 
 class LLM:
 
-    # نماذج بديلة للـ fallback
+    # Model list with fallback — primary model gives best accuracy
     MODELS = [
+        "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
+        "gemini-2.0-flash-lite",
     ]
 
     @staticmethod
+    def _clean_json(raw: str) -> str:
+        """
+        Robustly extract and clean the JSON object from Gemini output.
+        Handles: ```json fences, <think> blocks, trailing commas, single quotes.
+        """
+        import re as _re
+        raw = raw.strip()
+        # Remove <think>...</think> blocks (gemini-2.5 extended thinking output)
+        raw = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL).strip()
+        # Strip markdown fences
+        raw = _re.sub(r'^```(?:json)?\s*', '', raw, flags=_re.MULTILINE)
+        raw = _re.sub(r'\s*```$', '', raw, flags=_re.MULTILINE)
+        raw = raw.strip()
+        # Extract outermost {...} block
+        start = raw.find('{')
+        end   = raw.rfind('}')
+        if start != -1 and end != -1:
+            raw = raw[start:end + 1]
+        # Remove trailing commas before } or ] (common Gemini formatting mistake)
+        raw = _re.sub(r',\s*([}\]])', r'\1', raw)
+        return raw
+
+    @staticmethod
     def _call_gemini(model: str, prompt: str, pil_img) -> dict:
-        """استدعاء Gemini مع timeout وإرجاع dict"""
+        """Call Gemini with the given model and return parsed dict."""
         resp = gemini_client.models.generate_content(
             model=model,
             contents=[prompt, pil_img],
             config=types.GenerateContentConfig(
-                temperature=0.1,          # دقة عالية
-                max_output_tokens=1024,
+                temperature=0.1,
+                max_output_tokens=2048,
             )
         )
-        raw = resp.text.strip()
-        # تنظيف markdown code blocks
-        for fence in ("```json", "```"):
-            raw = raw.lstrip(fence)
-        raw = raw.rstrip("```").strip()
+        raw = LLM._clean_json(resp.text)
         return json.loads(raw)
 
     @staticmethod
@@ -321,7 +354,7 @@ class LLM:
         }
         lang_name = LANG_MAP.get(language, "English")
 
-        # البحث الآن يشمل الويب كاملاً — نُعطي Gemini سياق الريجون فقط بدون قيود أسواق
+        # Search covers the full web — we only give Gemini region context, no market restrictions
         prompt = f"""
 You are a global product identification and pricing expert.
 Analyze the product in this image carefully.
@@ -338,8 +371,8 @@ INSTRUCTIONS:
 1. Identify the product precisely (brand, model, variant if visible).
 2. Use the live web data to determine real market prices globally, 
    then convert / estimate the price in {region_info['currency']}.
-3. Price sources should be real URLs or store names found in live data.
-   If live data is empty, estimate from your knowledge but mark confidence as "low".
+3. Price sources MUST be real clickable URLs from the live data (e.g. https://www.amazon.com/...).
+   If the live data contains links, use them directly. If empty, use known store URLs or mark confidence "low".
 4. All string values MUST be in {lang_name} only.
 5. Return ONLY a valid JSON object — no markdown, no explanation.
 
@@ -360,21 +393,34 @@ Current time: {now}
 
         last_err = None
         for model in LLM.MODELS:
-            for attempt in range(3):
+            for attempt in range(2):  # 2 attempts per model before moving on
                 try:
-                    with Timer(f"Gemini [{model}] محاولة {attempt+1}"):
+                    with Timer(f"Gemini [{model}] attempt {attempt+1}"):
                         result = LLM._call_gemini(model, prompt, pil)
                     return result
+                except json.JSONDecodeError as e:
+                    # JSON parse error — model returned malformed response, try next model
+                    last_err = e
+                    print(f"⚠️  Gemini JSON error ({model} attempt {attempt+1}): {e}")
+                    break
                 except Exception as e:
                     last_err = e
-                    wait = (attempt + 1) * 2   # 2s, 4s, 6s
-                    print(f"⚠️  Gemini error ({model} attempt {attempt+1}): {e}")
-                    if "429" in str(e) or "quota" in str(e).lower():
-                        print(f"   Rate limit — انتظر {wait}s قبل المحاولة التالية")
-                        time.sleep(wait)
+                    err_str = str(e)
+                    print(f"⚠️  Gemini error ({model} attempt {attempt+1}): {err_str[:200]}")
+                    is_quota = "429" in err_str or "quota" in err_str.lower() or "RESOURCE_EXHAUSTED" in err_str
+                    if is_quota:
+                        # Skip to next model immediately — quota is exhausted for the day
+                        print(f"   Quota exhausted for {model} — skipping to next model.")
+                        break
+                    elif "404" in err_str or "NOT_FOUND" in err_str:
+                        print(f"   Model {model} not available — skipping.")
+                        break
                     else:
-                        break  # خطأ غير متعلق بـ rate limit — جرّب النموذج التالي
-            print(f"⚠️  النموذج {model} فشل، جاري تجربة النموذج التالي...")
+                        # Transient error — wait briefly and retry
+                        wait = (attempt + 1) * 2
+                        print(f"   Transient error — waiting {wait}s...")
+                        time.sleep(wait)
+            print(f"⚠️  Model {model} failed, trying next model...")
 
         raise RuntimeError(f"All Gemini models failed: {last_err}")
 
@@ -539,6 +585,7 @@ async def verify_otp(data: OTPVerify):
 @app.post("/crop", tags=["Search"])
 async def crop(file: UploadFile = File(...),
                user=Depends(Authentication.get_current_user)):
+    request_start = time.perf_counter()
     raw = await file.read()
     arr = np.frombuffer(raw, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -546,8 +593,14 @@ async def crop(file: UploadFile = File(...),
         raise HTTPException(422, "Invalid image.")
     with Timer("rembg background removal"):
         cropped = Vision.segment_product(img)
+    crop_elapsed = round(time.perf_counter() - request_start, 2)
+    print(f"\n✂️  [CROP] Total crop time: {crop_elapsed}s\n")
     _, buf  = cv2.imencode('.jpg', cropped, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    return {"cropped_image_b64": base64.b64encode(buf.tobytes()).decode(), "format": "jpeg"}
+    return {
+        "cropped_image_b64": base64.b64encode(buf.tobytes()).decode(),
+        "format": "jpeg",
+        "crop_time": crop_elapsed,
+    }
 
 
 @app.post("/search", tags=["Search"])
@@ -565,38 +618,38 @@ async def search(
     if img is None:
         raise HTTPException(422, "Could not decode image.")
 
-    # ── 1. إزالة الخلفية ─────────────────────────────────
+        # ── 1. Background removal ───────────────────────────────
     if not pre_cropped:
         with Timer("rembg background removal"):
             cropped = Vision.segment_product(img)
     else:
         cropped = img
-        print("⏱  [rembg] تخطّي — الصورة مقصوصة مسبقاً")
+        print("⏱  [rembg] skipped — image was pre-cropped")
 
-    # ── 2. استخراج المتّجه ────────────────────────────────
+    # ── 2. Feature vector extraction ─────────────────────────
     with Timer("CLIP vector extraction"):
         vec = Vision.extract_robust_vector(cropped)
 
-    # ── 3. بحث الكاش ─────────────────────────────────────
+    # ── 3. Cache search ────────────────────────────────────────
     with Timer("FAISS cache search"):
-        hit = Vision.search_similar(vec)
+        hit = Vision.search_similar(vec, language=language)
 
     total_elapsed = round(time.perf_counter() - request_start, 2)
 
     if hit and hit["product"]:
         query_fname = f"query_{uuid.uuid4()}.jpg"
         cv2.imwrite(os.path.join(STORAGE_DIR, query_fname), cropped)
-        print(f"\n🏁 [CACHE HIT] إجمالي الوقت: {total_elapsed}s | تشابه: {round(hit['similarity']*100,1)}%\n")
+        print(f"\n🏁 [CACHE HIT] Total time: {total_elapsed}s | Similarity: {round(hit['similarity']*100,1)}%\n")
 
         cached_product = hit["product"]
-        # إثراء الكاش بمعلومات التشابه
+        # Enrich cached product with similarity info
         cached_product["similarity"]     = hit["similarity"]
         cached_product["similarity_pct"] = round(hit["similarity"] * 100, 1)
         cached_product["query_image_url"] = f"/storage/{query_fname}"
 
         return {
             "source":          "cached",
-            "processing_time": total_elapsed,       # ← للفرونت فقط
+            "processing_time": total_elapsed,
             "similarity":      hit["similarity"],
             "similarity_pct":  round(hit["similarity"] * 100, 1),
             "query_image_url": f"/storage/{query_fname}",
@@ -606,11 +659,11 @@ async def search(
 
     region_code = user.get("region", "SA")
 
-    # ── 4. البحث المباشر (Google Lens) ────────────────────
+    # ── 4. Live visual search (Google Lens) ──────────────────
     with Timer("Google Lens visual search"):
         live_data = LiveSearch.get_live_visual_data(cropped, region_code)
 
-    # ── 5. تحليل Gemini ───────────────────────────────────
+    # ── 5. Gemini analysis ──────────────────────────────────
     try:
         data = LLM.generate_content(cropped, live_data, region_code, language)
     except Exception as e:
@@ -622,7 +675,7 @@ async def search(
     cv2.imwrite(os.path.join(STORAGE_DIR, fname), cropped)
     faiss_pos   = faiss_index.ntotal
 
-    # ── 6. حفظ في DB + FAISS ──────────────────────────────
+    # ── 6. Save to DB + FAISS ────────────────────────────────
     with Timer("DB + FAISS save"):
         conn = sqlite3.connect(DB_FILE); c = conn.cursor()
         c.execute('''INSERT INTO products
@@ -642,11 +695,11 @@ async def search(
         Vision.save_faiss(faiss_index, vector_map)
 
     total_elapsed = round(time.perf_counter() - request_start, 2)
-    print(f"\n🏁 [AI GENERATED] إجمالي الوقت: {total_elapsed}s\n")
+    print(f"\n🏁 [AI GENERATED] Total time: {total_elapsed}s\n")
 
     return {
         "source":           "ai_generated",
-        "processing_time":  total_elapsed,          # ← للفرونت فقط
+        "processing_time":  total_elapsed,
         "similar_products": [],
         "product": {
             "id":          pid,
