@@ -44,7 +44,7 @@ The backend is built with FastAPI and structured according to the Layered MVC ar
 ```
 smart_shopper/
 │
-├── backend/
+├── smart_shopper_backend/
 │   ├── storage/               # Temporary storage for cropped/processed images
 │   ├── .env.example           # Environment variable template
 │   ├── main.py                # Core application: API routes, LLM logic, Vision, DB
@@ -53,7 +53,7 @@ smart_shopper/
 │   ├── setup_server.sh        # Shell script for automated server environment setup
 │   └── update.sh              # Shell script for fetching updates and restarting services
 │
-└── frontend/
+└── smart_shopper_frontend/smart_shopper_complete/
     └── lib/
         ├── main.dart                        # App entry point, theme & routing
         ├── app_state.dart                   # Global state (theme, language, region)
