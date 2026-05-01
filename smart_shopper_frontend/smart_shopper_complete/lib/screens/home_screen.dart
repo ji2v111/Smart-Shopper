@@ -17,6 +17,9 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _idx = 0;
   String _role = 'user';
+  // Increment these to force screen recreation (triggers initState → _load)
+  int _histKey   = 0;
+  int _adminKey  = 0;
 
   @override
   void initState() {
@@ -29,6 +32,14 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => _role = r ?? 'user');
   }
 
+  void _onTabTap(int i, bool isAdmin) {
+    setState(() {
+      if (i == 1) _histKey++;              // history tab  → fresh load
+      if (isAdmin && i == 2) _adminKey++;  // admin tab    → fresh load
+      _idx = i;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final lang    = context.watch<AppState>().language;
@@ -38,8 +49,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final screens = [
       const SearchScreen(),
-      const HistoryScreen(),
-      if (isAdmin) const AdminScreen(),
+      HistoryScreen(key: ValueKey('hist_$_histKey')),
+      if (isAdmin) AdminScreen(key: ValueKey('admin_$_adminKey')),
       const SettingsScreen(),
     ];
 
@@ -71,7 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           child: BottomNavigationBar(
             currentIndex: _idx,
-            onTap: (i) => setState(() => _idx = i),
+            onTap: (i) => _onTabTap(i, isAdmin),
             items: navItems,
             elevation: 0,
             backgroundColor: Colors.transparent,

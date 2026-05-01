@@ -1,86 +1,88 @@
-# Smart Shopper - Frontend Setup Guide
+# Smart Shopper - Frontend Setup Guide 🚀
 
-## 🚀 خطوات التشغيل
+This guide provides instructions on how to set up and run the "Smart Shopper" application, developed using the Flutter framework.
 
-### 1. المتطلبات
-- Flutter SDK 3.x
-- Dart SDK 3.x
-- Android Studio / VS Code
-- Android Emulator أو جهاز حقيقي
+---
 
-### 2. تثبيت الحزم
+## ⚙️ Getting Started
+
+### 1. Prerequisites
+* **Flutter SDK:** version 3.x or higher.
+* **Dart SDK:** version 3.x or higher.
+* **IDE:** VS Code or Android Studio.
+* **Devices:** Android Emulator, iOS Simulator, or a physical device.
+
+### 2. Installation
+Open your terminal in the project directory and run the following command to install dependencies:
 ```bash
 cd smart_shopper_frontend
 flutter pub get
 ```
 
-### 3. تشغيل التطبيق
+### 3. Running the App
+To launch the application on your connected device or emulator:
 ```bash
 flutter run
 ```
 
 ---
 
-## ⚙️ إعداد الـ Base URL
+## 🌐 Base URL Configuration
 
-افتح الملف:
-```
-lib/services/api_service.dart
-```
+To connect the frontend to the backend, you must configure the base URL in the following file:
+`lib/services/api_service.dart`
 
-غير السطر التالي حسب بيئتك:
+Update the value based on your testing environment:
 
-| البيئة | القيمة |
-|---|---|
-| Android Emulator | `http://10.0.2.2:8000` ✅ (الافتراضي) |
-| iOS Simulator | `http://localhost:8000` |
-| جهاز Android/iOS حقيقي | `http://192.168.x.x:8000` (IP جهاز الكمبيوتر) |
+| Environment | Base URL Value | Notes |
+| :--- | :--- | :--- |
+| **Android Emulator** | `[http://10.0.2.2:8000](http://10.0.2.2:8000)` | Default for Android emulators |
+| **iOS Simulator** | `http://localhost:8000` | For macOS simulators |
+| **Physical Device** | `[http://192.168.](http://192.168.)x.x:8000` | Use your computer's local IP address |
 
 ---
 
-## 📁 هيكل المشروع
+## 📁 Project Structure
 
-```
+The following list describes the organization of files and folders inside the `lib` directory:
+
+```text
 lib/
-├── main.dart                    # نقطة الدخول + Splash
-├── app_state.dart               # إدارة الحالة (Theme / Language)
-├── theme.dart                   # ألوان وستايل التطبيق
-├── l10n.dart                    # ترجمات (ar, en, fr, es, zh)
+├── main.dart                 # Entry point + Splash screen management
+├── app_state.dart            # State management (Theme, Language)
+├── theme.dart                # Visual styles and color schemes
+├── l10n.dart                 # Localization files (AR, EN, etc.)
 ├── data/
-│   └── regions.dart             # قائمة الدول والعملات
+│   └── regions.dart          # Supported countries and currencies data
 ├── services/
-│   └── api_service.dart         # جميع طلبات الـ API
+│   └── api_service.dart      # API communication logic (Backend integration)
 ├── widgets/
-│   └── error_handler.dart       # SnackBar للأخطاء والنجاح
-└── screens/
-    ├── onboarding_screen.dart   # شاشة الترحيب (أول مرة)
-    ├── login_screen.dart        # تسجيل الدخول
-    ├── register_screen.dart     # إنشاء حساب
-    ├── otp_screen.dart          # التحقق برمز OTP
-    ├── home_screen.dart         # الشاشة الرئيسية (Bottom Nav)
-    ├── search_screen.dart       # رفع صورة وتحليل المنتج
-    ├── history_screen.dart      # سجل البحث
-    ├── product_detail_screen.dart # تفاصيل المنتج والسعر
-    ├── admin_screen.dart        # لوحة الأدمن
-    ├── user_detail_screen.dart  # تفاصيل المستخدم (أدمن)
-    └── settings_screen.dart     # الإعدادات
+│   └── error_handler.dart    # Reusable UI for SnackBars and alerts
+└── screens/                  # Main application screens
+    ├── onboarding_screen.dart # Welcome and intro tour
+    ├── login_screen.dart      # User login
+    ├── register_screen.dart   # Account registration
+    ├── otp_screen.dart        # OTP verification
+    ├── home_screen.dart       # Dashboard and bottom navigation
+    ├── search_screen.dart     # Image processing and product analysis
+    ├── history_screen.dart    # User's previous search history
+    ├── product_detail_screen.dart # Product details and price comparisons
+    ├── admin_screen.dart      # Admin control panel
+    ├── user_detail_screen.dart # User management screen for admins
+    └── settings_screen.dart   # Profile and app settings
 ```
 
 ---
 
-## 🔧 المشاكل الشائعة وحلولها
+## 🔧 Troubleshooting
 
-### ❌ `No pubspec.yaml file found`
-تأكد أنك داخل مجلد المشروع الصحيح قبل تشغيل أي أمر:
-```bash
-cd smart_shopper_frontend
-flutter pub get
-```
+### ❌ Error: `No pubspec.yaml file found`
+* **Fix:** Ensure your terminal's current working directory is `smart_shopper_frontend` before running Flutter commands.
 
-### ❌ لا يتصل بالـ Backend
-- تأكد أن الـ backend شغال على port 8000
-- تأكد من صحة الـ `baseUrl` في `api_service.dart`
-- على الجهاز الحقيقي استخدم IP الكمبيوتر (مش localhost)
+### ❌ Connection Failure (Backend)
+* Ensure the Backend server is running on port **8000**.
+* Verify the `baseUrl` in `api_service.dart`.
+* If using a physical device, both the phone and the computer must be on the same Wi-Fi network.
 
-### ❌ خطأ في الكاميرا أو الصور
-تأكد من وجود الـ permissions في `AndroidManifest.xml` (موجودة بالفعل)
+### ❌ Camera or Gallery Access Issues
+* The app includes the necessary permissions in `AndroidManifest.xml` and `Info.plist`. Ensure you grant permission when prompted by the OS.

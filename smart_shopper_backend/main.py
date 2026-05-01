@@ -212,18 +212,20 @@ class Vision:
         return mean
 
     @staticmethod
-    def search_similar(vec, language: str = "ar", top_k=10, threshold=0.87):
+    def search_similar(vec, language: str = "ar", top_k=15, threshold=0.88):
         """
-        Search for the nearest cached product, filtered by language to avoid
-        cross-language mismatches (e.g. Spanish query returning Arabic results).
-        Returns the best matching product + similarity score.
+        Search for the top 3 nearest cached products with similarity >= 0.88,
+        filtered by language to avoid cross-language mismatches.
+        Returns a list of up to 3 dicts: [{product, similarity}, ...].
         """
         if faiss_index.ntotal == 0:
-            return None
+            return []
         D, I = faiss_index.search(vec.reshape(1, -1), min(top_k, faiss_index.ntotal))
         conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; c = conn.cursor()
-        result = None; similarity = 0.0
+        results = []
         for dist, idx in zip(D[0], I[0]):
+            if len(results) >= 3:
+                break
             if idx == -1 or float(dist) < threshold:
                 continue
             pid = vector_map[idx]
@@ -237,12 +239,11 @@ class Vision:
             # Language must match — skip cross-language results
             if product.get("language", language) != language:
                 continue
-            result = product; similarity = round(float(dist), 4)
-            result["name"]  = dec(result.pop("name_enc",  "") or "")
-            result["brand"] = dec(result.pop("brand_enc", "") or "")
-            break
+            product["name"]  = dec(product.pop("name_enc",  "") or "")
+            product["brand"] = dec(product.pop("brand_enc", "") or "")
+            results.append({"product": product, "similarity": round(float(dist), 4)})
         conn.close()
-        return {"product": result, "similarity": similarity} if result else None
+        return results
 
     @staticmethod
     def save_faiss(index, vmap):
@@ -254,9 +255,11 @@ class LiveSearch:
     @staticmethod
     def get_live_visual_data(img_array, region_code: str) -> str:
         """
-        Visual search via Google Lens, returning results from the public web
-        with no market restrictions.
+        Visual search via Google Lens — DISABLED (service paused).
+        Returns empty list without calling any external API.
         """
+        return "[]"
+        # ── Disabled below ──────────────────────────────────────────────────
         if not SERPAPI_KEY or not IMGBB_KEY:
             return "[]"
         try:
@@ -298,8 +301,9 @@ class LiveSearch:
 
 class LLM:
 
-    # Model list with fallback — primary model gives best accuracy
+    # Model list with fallback — gemini-2.5-pro is primary for best accuracy
     MODELS = [
+        "gemini-2.5-pro",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
         "gemini-2.0-flash-lite",
@@ -426,7 +430,7 @@ Current time: {now}
 
 
 # ── OTP ──────────────────────────────────────────────────────────────────────
-SKIP_OTP = True
+SKIP_OTP = False
 
 class Authentication:
 
@@ -608,6 +612,7 @@ async def search(
     file: UploadFile = File(...),
     language:    str  = Query("ar"),
     pre_cropped: bool = Query(False),
+    skip_cache:  bool = Query(False),    # set True when user rejected all candidates
     user = Depends(Authentication.get_current_user)
 ):
     request_start = time.perf_counter()
@@ -618,7 +623,7 @@ async def search(
     if img is None:
         raise HTTPException(422, "Could not decode image.")
 
-        # ── 1. Background removal ───────────────────────────────
+    # ── 1. Background removal ───────────────────────────────
     if not pre_cropped:
         with Timer("rembg background removal"):
             cropped = Vision.segment_product(img)
@@ -630,40 +635,42 @@ async def search(
     with Timer("CLIP vector extraction"):
         vec = Vision.extract_robust_vector(cropped)
 
-    # ── 3. Cache search ────────────────────────────────────────
-    with Timer("FAISS cache search"):
-        hit = Vision.search_similar(vec, language=language)
+    # ── 3. Cache search (skipped when user rejected all candidates) ────
+    candidates = []
+    if not skip_cache:
+        with Timer("FAISS cache search"):
+            candidates = Vision.search_similar(vec, language=language)
 
     total_elapsed = round(time.perf_counter() - request_start, 2)
 
-    if hit and hit["product"]:
+    if candidates:
         query_fname = f"query_{uuid.uuid4()}.jpg"
         cv2.imwrite(os.path.join(STORAGE_DIR, query_fname), cropped)
-        print(f"\n🏁 [CACHE HIT] Total time: {total_elapsed}s | Similarity: {round(hit['similarity']*100,1)}%\n")
-
-        cached_product = hit["product"]
-        # Enrich cached product with similarity info
-        cached_product["similarity"]     = hit["similarity"]
-        cached_product["similarity_pct"] = round(hit["similarity"] * 100, 1)
-        cached_product["query_image_url"] = f"/storage/{query_fname}"
+        top_sim = round(candidates[0]["similarity"] * 100, 1)
+        print(f"\n🏁 [CACHE HIT] Total time: {total_elapsed}s | Top match: {top_sim}% | Count: {len(candidates)}\n")
 
         return {
-            "source":          "cached",
+            "source":          "candidates",
             "processing_time": total_elapsed,
-            "similarity":      hit["similarity"],
-            "similarity_pct":  round(hit["similarity"] * 100, 1),
             "query_image_url": f"/storage/{query_fname}",
-            "product":         cached_product,
+            "candidates": [
+                {
+                    "product":        c["product"],
+                    "similarity":     c["similarity"],
+                    "similarity_pct": round(c["similarity"] * 100, 1),
+                }
+                for c in candidates
+            ],
             "similar_products": [],
         }
 
     region_code = user.get("region", "SA")
 
-    # ── 4. Live visual search (Google Lens) ──────────────────
+    # ── 4. Live visual search — DISABLED, always returns [] ──────────
     with Timer("Google Lens visual search"):
         live_data = LiveSearch.get_live_visual_data(cropped, region_code)
 
-    # ── 5. Gemini analysis ──────────────────────────────────
+    # ── 5. Gemini 2.5 Pro analysis ──────────────────────────────────
     try:
         data = LLM.generate_content(cropped, live_data, region_code, language)
     except Exception as e:

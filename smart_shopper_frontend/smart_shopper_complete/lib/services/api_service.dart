@@ -109,10 +109,14 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> searchByBytes(
-      List<int> bytes, {String language = 'ar'}) async {
+      List<int> bytes, {String language = 'ar', bool skipCache = false}) async {
     final t = await getToken();
     final uri = Uri.parse('$baseUrl/search')
-        .replace(queryParameters: {'language': language, 'pre_cropped': 'true'});
+        .replace(queryParameters: {
+          'language': language,
+          'pre_cropped': 'true',
+          if (skipCache) 'skip_cache': 'true',
+        });
     final req = http.MultipartRequest('POST', uri);
     req.headers['ngrok-skip-browser-warning'] = 'true';
     if (t != null) req.headers['Authorization'] = t;
